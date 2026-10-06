@@ -1,0 +1,6 @@
+motornet
+gymnasium
+matplotlib
+imageio-ffmpeg
+jupyter
+ipykernel

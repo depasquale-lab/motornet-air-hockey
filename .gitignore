@@ -1,0 +1,17 @@
+# environments / caches
+.venv/
+__pycache__/
+.ipynb_checkpoints/
+.DS_Store
+
+# training artifacts (large / regenerable)
+*.pt
+*.pt.tmp
+*.log
+*_log.txt
+old_checkpoints/
+smoke*
+
+# rendered output in the repo root (curated gifs live in media/)
+/*.mp4
+/*.gif
