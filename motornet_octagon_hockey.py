@@ -63,7 +63,7 @@ M_PUCK = 0.1
 K_CONTACT, C_CONTACT = 600.0, 3.0   # mallet-puck spring / damper
 K_WALL = 1500.0
 PUCK_DRAG = 0.15
-PUCK_NOISE = 0.2     # brownian kick on puck velocity (m/s per sqrt(s)); ~2 mm/s per 10 ms step
+PUCK_NOISE = 0.0     # optional brownian kick on puck velocity (m/s per sqrt(s)); 0.2 is a faint jitter
 BETA = 300.0         # softplus sharpness (1/m) for contacts and walls
 BETA_GOAL = 150.0    # sharpness of the soft goal indicator
 

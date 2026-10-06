@@ -73,7 +73,7 @@ BETA_GOAL = 150.0    # sharpness of the soft goal indicator
 
 PROP_DELAY = 2       # 20 ms proprioceptive delay
 VIS_DELAY = 5        # 50 ms visual delay
-PUCK_NOISE = 0.2     # brownian kick on puck velocity (m/s per sqrt(s)); ~2 mm/s per 10 ms step
+PUCK_NOISE = 0.0     # optional brownian kick on puck velocity (m/s per sqrt(s)); 0.2 is a faint jitter
 LOAD_GAIN = 1.0      # scale on puck reaction force fed back to the arm
 
 HAND_CENTER = torch.tensor([0.0, 0.45])

@@ -6,7 +6,7 @@ Air hockey played by [MotorNet](https://github.com/OlivierCodol/MotorNet) arms, 
 |:---:|:---:|
 | ![two-player air hockey](media/air_hockey_2p.gif) | ![octagon air hockey](media/octagon_hockey.gif) |
 
-> The GIFs are snapshots from in-progress training runs (2-player at ~iteration 600, octagon at iteration 25, i.e. nearly untrained), not converged behavior. Re-render them from your own checkpoints, see below.
+> The GIFs are snapshots from in-progress training runs (2-player at ~iteration 600, octagon at iteration 25, i.e. nearly untrained, both from an earlier run with puck jitter on), not converged behavior. Re-render them from your own checkpoints, see below.
 
 ## Contents
 
@@ -43,7 +43,7 @@ Training is CPU-bound by Python overhead (thousands of tiny sequential ops), so 
 
 ## How the game is set up
 
-- **Two-player:** shoulders 1.2 m apart facing each other, goals in the end walls. The puck is launched mostly along the long axis and gets a small brownian velocity jitter (`PUCK_NOISE`) so it doesn't just glide sideways.
+- **Two-player:** shoulders 1.2 m apart facing each other, goals in the end walls. The puck is launched from a wide area, aimed mostly along the long axis, so it doesn't just glide sideways. An optional brownian velocity jitter on the puck is available (`PUCK_NOISE`, off by default).
 - **Octagon:** regular octagon with 0.45 m apothem, a 0.18 m goal in the middle of each side, and a player standing 0.6 m from the centre behind each goal. Every player sees the puck and all other hands in its own egocentric frame, with 20 ms proprioceptive and 50 ms visual delays.
 - **Losses:** goals conceded, goals scored on others (octagon: shared among the other seven), puck territory, an early-training "chase the puck" shaping term that is annealed away, and a small effort penalty. The game terms are zero-sum across players.
 - **Known simplifications:** mallets and arms don't collide with each other; only mallet-puck and puck-wall contacts are simulated. Hyperparameters are untuned and a full training run has not been completed, so don't expect polished play yet.
