@@ -232,24 +232,24 @@ class Player:
 # ----------------------------------------------------------------------------------------
 # Rollout
 # ----------------------------------------------------------------------------------------
-def init_puck(batch, device):
+def init_puck(batch, device, speed_scale=1.0):
     """Puck near the centre with a random heading and speed."""
     r = 0.25 * torch.sqrt(torch.rand(batch, device=device))
     th = torch.rand(batch, device=device) * 2 * np.pi
     ang = torch.rand(batch, device=device) * 2 * np.pi
-    spd = 0.2 + 1.3 * torch.rand(batch, device=device)
+    spd = speed_scale * (0.2 + 1.3 * torch.rand(batch, device=device))
     p = torch.stack([r * torch.cos(th), r * torch.sin(th)], -1)
     v = torch.stack([spd * torch.cos(ang), spd * torch.sin(ang)], -1)
     return p, v
 
 
-def rollout(players, batch, T, noise=0.0, record=False):
+def rollout(players, batch, T, noise=0.0, record=False, speed_scale=1.0):
     """record=True: batch must be 1; the puck respawns at the centre after each goal and
     per-frame state is stored for rendering."""
     device = players[0].device
     for pl in players:
         pl.reset(batch)
-    p, v = init_puck(batch, device)
+    p, v = init_puck(batch, device, speed_scale)
     f = torch.zeros(batch, N, 2, device=device)
     hist = {"puck": [], "hands": [], "q": [], "goals_against": []}
     scores = np.zeros(N, dtype=int)
@@ -331,8 +331,11 @@ def train(args):
                        config={**vars(args), "start_iter": start})
     for it in range(start, args.iters):
         # curriculum: lean on the chase shaping early, let the game take over later
+        # curriculum: the puck starts at rest and its launch speed ramps up over --curriculum_iters,
+        # so the arms first learn to reach a stationary puck before facing a moving one
+        speed_scale = min(1.0, it / args.curriculum_iters) if args.curriculum_iters else 1.0
         w_chase = max(args.chase_floor, args.chase_w0 * (1 - it / (0.6 * args.iters)))
-        out = rollout(players, args.batch, args.episode, noise=args.noise)
+        out = rollout(players, args.batch, args.episode, noise=args.noise, speed_scale=speed_scale)
         L, st = losses(out, w_chase=w_chase, w_effort=args.effort)
 
         grads = [torch.autograd.grad(L[k], params[k], retain_graph=k < N - 1) for k in range(N)]
@@ -343,7 +346,7 @@ def train(args):
             opts[k].step()
 
         if wb:
-            wb.log({"goals_per_episode": st["conceded"], "chase": st["chase"], "w_chase": w_chase,
+            wb.log({"goals_per_episode": st["conceded"], "chase": st["chase"], "w_chase": w_chase, "speed_scale": speed_scale,
                     "u_mean": out["u"].mean().item(),
                     **{f"loss/p{k}": L[k].item() for k in range(N)},
                     **{f"u_mean/p{k}": out["u"][:, :, k].mean().item() for k in range(N)}}, step=it)
@@ -461,6 +464,7 @@ if __name__ == "__main__":
     ap.add_argument("--resume", action="store_true", help="continue from --ckpt if it exists")
     ap.add_argument("--hidden", type=int, default=128)
     ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument("--curriculum_iters", type=int, default=0, help="ramp puck launch speed from 0 to full over this many iterations (0 = off)")
     ap.add_argument("--wandb", default="", help="Weights & Biases project to log to (off if empty)")
     ap.add_argument("--run_name", default="", help="wandb run name")
     ap.add_argument("--wandb_id", default="", help="wandb run id, to continue logging into an existing run")
