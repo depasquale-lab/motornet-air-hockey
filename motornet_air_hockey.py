@@ -43,6 +43,7 @@ Status and notes for whoever picks this up
   per-step physics; the per-iteration cost is dominated by Python/kernel overhead.
 """
 import argparse
+import os
 from collections import deque
 
 import numpy as np
@@ -327,7 +328,8 @@ def train(args):
     wb = None
     if args.wandb:
         import wandb
-        wb = wandb.init(project=args.wandb, name=args.run_name or None, config={**vars(args), "start_iter": start})
+        wb = wandb.init(project=args.wandb, name=args.run_name or None, id=args.wandb_id or None, resume="allow",
+                       config={**vars(args), "start_iter": start})
     for it in range(start, args.iters):
         # curriculum: lean on the chase shaping early, let the game take over later
         w_chase = max(args.chase_floor, args.chase_w0 * (1 - it / (0.6 * args.iters)))
@@ -357,6 +359,8 @@ def train(args):
             torch.save({"A": A.policy.state_dict(), "B": B.policy.state_dict(),
                         "optA": optA.state_dict(), "optB": optB.state_dict(),
                         "it": it + 1, "hidden": args.hidden}, args.ckpt)
+            if wb and args.video_every and ((it + 1) % args.video_every == 0 or it == args.iters - 1):
+                log_video(wb, args, it)
     if wb:
         wb.finish()
     return A, B
@@ -421,13 +425,29 @@ def play(args):
         return armA, armB, malA, malB, puck, txt
 
     anim = animation.FuncAnimation(fig, frame, frames=len(H["puck"]), interval=1000 * DT, blit=True)
+    if not args.gif_only:
+        try:
+            anim.save(args.out + ".mp4", fps=int(1 / DT), dpi=120)
+            print(f"saved {args.out}.mp4")
+        except Exception as e:
+            print(f"mp4 failed ({e})")
+    anim.save(args.out + ".gif", fps=int(1 / DT) // 2, dpi=80)   # always keep a gif on disk too
+    print(f"saved {args.out}.gif")
+
+
+def log_video(wb, args, it):
+    """Render a short game from the latest checkpoint and upload it to wandb as a gif."""
+    import subprocess
+    import sys
+    import wandb
+    out = args.ckpt + ".vid"
     try:
-        anim.save("air_hockey.mp4", fps=int(1 / DT), dpi=120)
-        print("saved air_hockey.mp4")
-    except Exception as e:
-        print(f"mp4 failed ({e})")
-    anim.save("air_hockey.gif", fps=int(1 / DT) // 2, dpi=80)   # always keep a gif on disk too
-    print("saved air_hockey.gif")
+        subprocess.run([sys.executable, os.path.abspath(__file__), "--play", args.ckpt, "--T", str(args.video_T),
+                        "--out", out, "--substeps", str(args.substeps), "--gif_only"],
+                       check=True, capture_output=True)
+        wb.log({"game": wandb.Video(out + ".gif", format="gif")}, step=it)
+    except Exception as e:   # never let a rendering problem kill a training run
+        print(f"video logging failed: {e}", flush=True)
 
 
 if __name__ == "__main__":
@@ -441,6 +461,10 @@ if __name__ == "__main__":
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--wandb", default="", help="Weights & Biases project to log to (off if empty)")
     ap.add_argument("--run_name", default="", help="wandb run name")
+    ap.add_argument("--wandb_id", default="", help="wandb run id, to continue logging into an existing run")
+    ap.add_argument("--video_every", type=int, default=0, help="upload a gif of a game to wandb every N iterations (0 = off)")
+    ap.add_argument("--video_T", type=int, default=300, help="steps in the uploaded gif")
+    ap.add_argument("--gif_only", action="store_true", help="--play: skip the mp4")
     ap.add_argument("--out_bias", type=float, default=-1.5, help="initial readout bias (motornet default is -5)")
     ap.add_argument("--chase_w0", type=float, default=2.0, help="initial weight on the chase shaping term")
     ap.add_argument("--chase_floor", type=float, default=0.2, help="final weight on the chase shaping term")
@@ -449,6 +473,7 @@ if __name__ == "__main__":
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="cpu", help="CPU benchmarked faster than GPU here")
     ap.add_argument("--ckpt", default="air_hockey.pt")
+    ap.add_argument("--out", default="air_hockey", help="video basename in --play mode")
     ap.add_argument("--play", default=None, help="checkpoint to render instead of training")
     ap.add_argument("--T", type=int, default=600, help="steps to render in --play mode")
     args = ap.parse_args()
