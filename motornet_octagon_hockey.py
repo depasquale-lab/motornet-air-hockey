@@ -192,6 +192,14 @@ class Player:
         self.prop_buf = deque(maxlen=PROP_DELAY + 1)
         self.vis_buf = deque(maxlen=VIS_DELAY + 1)
 
+    def detach_state(self):
+        """Cut the autograd graph here (truncated BPTT): keeps values, drops history."""
+        self.arm.states = {k: v.detach() for k, v in self.arm.states.items()}
+        self.h = self.h.detach()
+        self.u = self.u.detach()
+        self.prop_buf = deque([x.detach() for x in self.prop_buf], maxlen=self.prop_buf.maxlen)
+        self.vis_buf = deque([x.detach() for x in self.vis_buf], maxlen=self.vis_buf.maxlen)
+
     def hand_table(self):
         c = self.arm.states["cartesian"]
         return pos_to_table(c[:, :2], self.idx), vec_to_table(c[:, 2:], self.idx)
@@ -243,7 +251,7 @@ def init_puck(batch, device, speed_scale=1.0):
     return p, v
 
 
-def rollout(players, batch, T, noise=0.0, record=False, speed_scale=1.0):
+def rollout(players, batch, T, noise=0.0, record=False, speed_scale=1.0, tbptt=0):
     """record=True: batch must be 1; the puck respawns at the centre after each goal and
     per-frame state is stored for rendering."""
     device = players[0].device
@@ -256,6 +264,10 @@ def rollout(players, batch, T, noise=0.0, record=False, speed_scale=1.0):
     traj_p, u_all, d_all = [], [], []
 
     for t in range(T):
+        if tbptt and t and t % tbptt == 0:   # truncated BPTT: gradients exploded over long horizons
+            for pl in players:
+                pl.detach_state()
+            p, v, f = p.detach(), v.detach(), f.detach()
         hp = torch.stack([pl.hand_table()[0] for pl in players], 1)
         us = [pl.act(pl.observe(p, v, hp), noise) for pl in players]
         # reaction force of the puck on each mallet (from the previous step's contacts)
@@ -302,6 +314,77 @@ def losses(out, w_terr=0.5, w_chase=1.0, w_effort=1e-2):
 
 
 # ----------------------------------------------------------------------------------------
+# Stage 0: reach pretraining (single player, ghost target, no game)
+# ----------------------------------------------------------------------------------------
+
+REACH_Q0 = np.deg2rad([45.0, 90.0])
+
+
+def reach_targets(player, batch, speed):
+    """Reachable targets in the player's own frame (the fingertip of a random posture near rest)
+    plus a random constant target velocity of up to `speed` m/s."""
+    ub = player.arm.skeleton.pos_upper_bound.cpu().numpy().reshape(-1) - 0.05
+    q = np.clip(REACH_Q0 + np.deg2rad(30.0) * np.random.randn(batch, 2), 0.05, ub)
+    player.arm.reset(options={"batch_size": batch, "joint_state": torch.tensor(q, dtype=torch.float32)})
+    tgt = player.arm.states["fingertip"].detach().clone()
+    ang = torch.rand(batch, 1, device=tgt.device) * 2 * np.pi
+    vel = speed * torch.rand(batch, 1, device=tgt.device) * torch.cat([ang.cos(), ang.sin()], -1)
+    return tgt, vel
+
+
+def reach_loss(pl, args, speed):
+    """One single-player reaching episode: the 'puck' is a ghost target (no contacts) that the
+    hand must reach and follow. Dense per-step distance loss, weighted towards later steps."""
+    B, T = args.batch, args.reach_T
+    tgt, vel = reach_targets(pl, B, speed)
+    pl.reset(B)
+    rest = torch.stack([pos_to_table(HAND_CENTER.to(tgt.device).expand(B, 2), k) for k in range(N)], 1)  # idle hands
+    zero = torch.zeros(B, 2, device=tgt.device)
+    dists, us = [], []
+    for t in range(T):
+        tgt_t = tgt + vel * t * DT
+        obs = pl.observe(pos_to_table(tgt_t, pl.idx), vec_to_table(vel, pl.idx), rest)
+        u = pl.act(obs, args.noise)
+        pl.step(u, zero)
+        dists.append((pl.arm.states["fingertip"] - tgt_t).norm(dim=-1))
+        us.append(u)
+    D = torch.stack(dists, 1)                                            # (B, T)
+    w = torch.linspace(0.3, 1.0, T, device=D.device)
+    return (w * D).mean() + args.effort * torch.stack(us).pow(2).mean(), D[:, -10:].mean().item()
+
+
+def pretrain_reach(players, params, args, wb):
+    """Stage 0: teach each policy to reach (and follow) a ghost target, independently of the game."""
+    opts = [torch.optim.Adam(ps, lr=args.lr) for ps in params]
+    for i in range(args.pretrain_iters):
+        speed = args.reach_speed * min(1.0, i / max(1, 0.5 * args.pretrain_iters))   # target speed ramps up
+        info, finals = {}, []
+        for k, pl in enumerate(players):
+            loss, final = reach_loss(pl, args, speed)
+            opts[k].zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(params[k], 1.0)
+            opts[k].step()
+            finals.append(final)
+            info[f"pretrain/loss_p{k}"] = loss.item()
+        info["pretrain/final_dist"] = float(np.mean(finals))
+        if wb:
+            wb.log({**info, "pretrain/iter": i, "pretrain/target_speed": speed})
+        if i % args.log_every == 0 or i == args.pretrain_iters - 1:
+            print(f"pretrain {i:5d} | speed {speed:.2f} | final dist {np.mean(finals):.3f} "
+                  f"(per player " + " ".join(f"{x:.2f}" for x in finals) + ")", flush=True)
+
+
+def add_reach_grads(pl, params, grads, args):
+    """Rehearsal: add the gradient of a small single-player reach episode to the game gradient, so the
+    game stage doesn't erase the reach skill learned in pretraining."""
+    sub = argparse.Namespace(**{**vars(args), "batch": max(16, args.batch // 4)})
+    loss, _ = reach_loss(pl, sub, args.reach_speed)
+    gr = torch.autograd.grad(loss, params)
+    return [g + args.reach_w * r for g, r in zip(grads, gr)]
+
+
+# ----------------------------------------------------------------------------------------
 # Training: simultaneous gradient play, each net descends only its own loss
 # ----------------------------------------------------------------------------------------
 def train(args):
@@ -329,16 +412,26 @@ def train(args):
         import wandb
         wb = wandb.init(project=args.wandb, name=args.run_name or None, id=args.wandb_id or None, resume="allow",
                        config={**vars(args), "start_iter": start})
+        wb.define_metric("iter")
+        wb.define_metric("*", step_metric="iter")
+        wb.define_metric("pretrain/iter")
+        wb.define_metric("pretrain/*", step_metric="pretrain/iter")
+    if start == 0 and args.pretrain_iters:
+        pretrain_reach(players, params, args, wb)
+        opts = [torch.optim.Adam(ps, lr=args.game_lr or args.lr) for ps in params]   # fresh state for the game stage
     for it in range(start, args.iters):
         # curriculum: lean on the chase shaping early, let the game take over later
         # curriculum: the puck starts at rest and its launch speed ramps up over --curriculum_iters,
         # so the arms first learn to reach a stationary puck before facing a moving one
         speed_scale = min(1.0, it / args.curriculum_iters) if args.curriculum_iters else 1.0
         w_chase = max(args.chase_floor, args.chase_w0 * (1 - it / (0.6 * args.iters)))
-        out = rollout(players, args.batch, args.episode, noise=args.noise, speed_scale=speed_scale)
+        out = rollout(players, args.batch, args.episode, noise=args.noise, speed_scale=speed_scale,
+                      tbptt=args.tbptt)
         L, st = losses(out, w_chase=w_chase, w_effort=args.effort)
 
         grads = [torch.autograd.grad(L[k], params[k], retain_graph=k < N - 1) for k in range(N)]
+        if args.reach_w > 0:
+            grads = [add_reach_grads(players[k], params[k], grads[k], args) for k in range(N)]
         for k in range(N):
             for prm, g in zip(params[k], grads[k]):
                 prm.grad = g
@@ -349,7 +442,7 @@ def train(args):
             wb.log({"goals_per_episode": st["conceded"], "chase": st["chase"], "w_chase": w_chase, "speed_scale": speed_scale,
                     "u_mean": out["u"].mean().item(),
                     **{f"loss/p{k}": L[k].item() for k in range(N)},
-                    **{f"u_mean/p{k}": out["u"][:, :, k].mean().item() for k in range(N)}}, step=it)
+                    **{f"u_mean/p{k}": out["u"][:, :, k].mean().item() for k in range(N)}, "iter": it})
         if it % args.log_every == 0:
             print(f"it {it:5d} | goals/episode {st['conceded']:.2f} | chase {st['chase']:.3f} | "
                   f"loss " + " ".join(f"{x:+.2f}" for x in L.tolist()), flush=True)
@@ -450,7 +543,7 @@ def log_video(wb, args, it):
         subprocess.run([sys.executable, os.path.abspath(__file__), "--play", args.ckpt, "--T", str(args.video_T),
                         "--out", out, "--substeps", str(args.substeps), "--gif_only"],
                        check=True, capture_output=True)
-        wb.log({"game": wandb.Video(out + ".gif", format="gif")}, step=it)
+        wb.log({"game": wandb.Video(out + ".gif", format="gif"), "iter": it})
     except Exception as e:   # never let a rendering problem kill a training run
         print(f"video logging failed: {e}", flush=True)
 
@@ -464,6 +557,12 @@ if __name__ == "__main__":
     ap.add_argument("--resume", action="store_true", help="continue from --ckpt if it exists")
     ap.add_argument("--hidden", type=int, default=128)
     ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument("--reach_w", type=float, default=0.0, help="weight of reach-rehearsal gradients added during game training (0 = off)")
+    ap.add_argument("--game_lr", type=float, default=0.0, help="learning rate for the game stage after pretraining (0 = same as --lr)")
+    ap.add_argument("--tbptt", type=int, default=0, help="truncate BPTT every N steps in game rollouts (0 = full)")
+    ap.add_argument("--pretrain_iters", type=int, default=0, help="stage-0 reach pretraining iterations (0 = off)")
+    ap.add_argument("--reach_T", type=int, default=60, help="steps per pretraining episode")
+    ap.add_argument("--reach_speed", type=float, default=0.4, help="max ghost-target speed (m/s) in pretraining")
     ap.add_argument("--curriculum_iters", type=int, default=0, help="ramp puck launch speed from 0 to full over this many iterations (0 = off)")
     ap.add_argument("--wandb", default="", help="Weights & Biases project to log to (off if empty)")
     ap.add_argument("--run_name", default="", help="wandb run name")
