@@ -161,7 +161,7 @@ def make_arm():
 
 
 class Player:
-    def __init__(self, idx, hidden=128, device="cpu"):
+    def __init__(self, idx, hidden=128, device="cpu", out_bias=None):
         self.idx = idx
         self.arm = make_arm().to(device)
         # motornet's .to() only updates the effector's own `device` attribute; the muscle and
@@ -170,6 +170,10 @@ class Player:
         self.arm.skeleton.to(device)
         self.n_obs = 12 + 2 + 4 + 2 + 6  # prop, own hand, puck pos/vel, opponent hand, efference copy
         self.policy = mn.policy.PolicyGRU(self.n_obs, hidden, self.arm.n_muscles, device=device)
+        if out_bias is not None:
+            # motornet initialises the readout bias at -5 (muscles fully off, sigmoid saturated), which
+            # starves the policy of gradient and lets the arm go limp; start with some tonic drive
+            torch.nn.init.constant_(self.policy.fc.bias, out_bias)
         self.device = device
 
     def reset(self, batch):
@@ -300,7 +304,8 @@ def losses(out, w_terr=0.5, w_chase=1.0, w_effort=1e-2):
 def train(args):
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
-    A, B = Player(0, args.hidden, args.device), Player(1, args.hidden, args.device)
+    A = Player(0, args.hidden, args.device, args.out_bias)
+    B = Player(1, args.hidden, args.device, args.out_bias)
     optA = torch.optim.Adam(A.policy.parameters(), lr=args.lr)
     optB = torch.optim.Adam(B.policy.parameters(), lr=args.lr)
     pA, pB = list(A.policy.parameters()), list(B.policy.parameters())
@@ -319,11 +324,15 @@ def train(args):
         else:
             print(f"no checkpoint at {args.ckpt}, starting fresh")
 
+    wb = None
+    if args.wandb:
+        import wandb
+        wb = wandb.init(project=args.wandb, name=args.run_name or None, config={**vars(args), "start_iter": start})
     for it in range(start, args.iters):
         # curriculum: lean on the chase shaping early, let the game take over later
-        w_chase = max(0.2, 2.0 * (1 - it / (0.6 * args.iters)))
+        w_chase = max(args.chase_floor, args.chase_w0 * (1 - it / (0.6 * args.iters)))
         out = rollout(A, B, args.batch, T=args.episode, noise=args.noise)
-        L_A, L_B, st = losses(out, w_chase=w_chase)
+        L_A, L_B, st = losses(out, w_chase=w_chase, w_effort=args.effort)
 
         gA = torch.autograd.grad(L_A, pA, retain_graph=True)
         gB = torch.autograd.grad(L_B, pB)
@@ -336,6 +345,10 @@ def train(args):
         optA.step()
         optB.step()
 
+        if wb:
+            wb.log({"loss/A": L_A.item(), "loss/B": L_B.item(), "goals/A": st["goals_A"], "goals/B": st["goals_B"],
+                    "chase/A": st["chase_A"], "chase/B": st["chase_B"], "w_chase": w_chase,
+                    "u_mean/A": out["uA"].mean().item(), "u_mean/B": out["uB"].mean().item()}, step=it)
         if it % 25 == 0:
             print(f"it {it:5d} | L_A {L_A.item():+.3f} L_B {L_B.item():+.3f} | "
                   f"goals A {st['goals_A']:.2f} B {st['goals_B']:.2f} | "
@@ -344,6 +357,8 @@ def train(args):
             torch.save({"A": A.policy.state_dict(), "B": B.policy.state_dict(),
                         "optA": optA.state_dict(), "optB": optB.state_dict(),
                         "it": it + 1, "hidden": args.hidden}, args.ckpt)
+    if wb:
+        wb.finish()
     return A, B
 
 
@@ -424,6 +439,12 @@ if __name__ == "__main__":
     ap.add_argument("--resume", action="store_true", help="continue from --ckpt if it exists")
     ap.add_argument("--hidden", type=int, default=128)
     ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument("--wandb", default="", help="Weights & Biases project to log to (off if empty)")
+    ap.add_argument("--run_name", default="", help="wandb run name")
+    ap.add_argument("--out_bias", type=float, default=-1.5, help="initial readout bias (motornet default is -5)")
+    ap.add_argument("--chase_w0", type=float, default=2.0, help="initial weight on the chase shaping term")
+    ap.add_argument("--chase_floor", type=float, default=0.2, help="final weight on the chase shaping term")
+    ap.add_argument("--effort", type=float, default=1e-2, help="weight on the muscle-effort penalty")
     ap.add_argument("--noise", type=float, default=0.01, help="motor noise on muscle commands")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="cpu", help="CPU benchmarked faster than GPU here")

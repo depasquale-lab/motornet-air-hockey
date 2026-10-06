@@ -39,6 +39,8 @@ python motornet_octagon_hockey.py --resume                 # train, checkpoints 
 python motornet_octagon_hockey.py --play octagon_hockey.pt # writes octagon_hockey.mp4 and .gif
 ```
 
+Add `--wandb <project> --run_name <name>` to either training script to log losses, goals, chase distance and mean muscle activation to Weights & Biases (`wandb login` first). Mean activation (`u_mean`) is worth watching: if it sits near 0 the arms are limp.
+
 Training is CPU-bound by Python overhead (thousands of tiny sequential ops), so a GPU doesn't help and batch size is nearly free. Roughly 1 s/iteration for two players and 8 s/iteration for eight. `--resume` continues from the last checkpoint (saved every 25 to 50 iterations).
 
 ## How the game is set up
