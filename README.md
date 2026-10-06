@@ -6,7 +6,7 @@ Air hockey played by [MotorNet](https://github.com/OlivierCodol/MotorNet) arms, 
 |:---:|:---:|
 | ![two-player air hockey](media/air_hockey_2p.gif) | ![octagon air hockey](media/octagon_hockey.gif) |
 
-> Work in progress. The GIFs are the final policies of the latest runs (2-player 1500 iterations, octagon 1000 iterations; see [reports/](reports/)). The 2-player GIF is the latest run (reach pretraining + truncated BPTT), in which the arms follow and hit the puck; the octagon GIF is from an earlier run. Re-render from your own checkpoints, see below.
+> Work in progress. The GIFs are the final policies of the latest runs (2-player 1500 iterations, octagon 1000 iterations; see [reports/](reports/)). The 2-player GIF is the latest run (reach pretraining + truncated BPTT), in which the arms follow and hit the puck; the octagon GIF is the matching 8-player run (arms are active and hit the puck but do not defend yet). Re-render from your own checkpoints, see below.
 
 ## Contents
 
