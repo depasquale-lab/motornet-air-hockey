@@ -6,7 +6,7 @@ Air hockey played by [MotorNet](https://github.com/OlivierCodol/MotorNet) arms, 
 |:---:|:---:|
 | ![two-player air hockey](media/air_hockey_2p.gif) | ![octagon air hockey](media/octagon_hockey.gif) |
 
-> The GIFs are snapshots from in-progress training runs (2-player at ~iteration 600, octagon at iteration 25, i.e. nearly untrained, both from an earlier run with puck jitter on), not converged behavior. Re-render them from your own checkpoints, see below.
+> Work in progress. The GIFs are snapshots of in-progress training with no puck jitter (2-player at iteration 550 of 1000, octagon at iteration 50 of 1000), so the play is not yet good: arms are still learning to reach the puck. They will be refreshed as training finishes. Re-render from your own checkpoints, see below.
 
 ## Contents
 
