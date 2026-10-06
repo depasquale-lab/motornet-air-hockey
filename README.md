@@ -6,7 +6,7 @@ Air hockey played by [MotorNet](https://github.com/OlivierCodol/MotorNet) arms, 
 |:---:|:---:|
 | ![two-player air hockey](media/air_hockey_2p.gif) | ![octagon air hockey](media/octagon_hockey.gif) |
 
-> Work in progress. The GIFs are snapshots of in-progress training with no puck jitter (2-player at iteration 550 of 1000, octagon at iteration 50 of 1000), so the play is not yet good: arms are still learning to reach the puck. They will be refreshed as training finishes. Re-render from your own checkpoints, see below.
+> Work in progress. The GIFs are the final policies of the latest runs (2-player 1500 iterations, octagon 1000 iterations; see [reports/2026-10-06_curriculum_runs.md](reports/2026-10-06_curriculum_runs.md)). The arms move but do not yet defend convincingly. Re-render from your own checkpoints, see below.
 
 ## Contents
 
@@ -16,6 +16,8 @@ Air hockey played by [MotorNet](https://github.com/OlivierCodol/MotorNet) arms, 
 | `motornet_octagon_hockey.ipynb` / `.py` | Eight arms around an octagonal table, a goal on every side. The notebook trains in a detached background process and renders the video. |
 
 The notebooks write their `.py` file themselves (`%%writefile`), and the `.py` files are also committed so they can be run from the command line.
+
+Run reports live in [`reports/`](reports/); training curves and gifs are logged to Weights & Biases.
 
 ## Setup
 
