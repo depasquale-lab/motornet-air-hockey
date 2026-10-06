@@ -43,7 +43,15 @@ def episode(G, game, players, T):
     H = out["hist"]
     puck = np.array(H["puck"])
     hands = np.array(H["hands"]) if game == "oct" else np.stack([np.array(H["A"]), np.array(H["B"])], 1)
-    goals = np.array(H["goals_against"])[-1] if game == "oct" else np.zeros(2)
+    if game == "oct":
+        return puck, hands, np.array(H["goals_against"])[-1]
+    # 2-player game has no respawn: end the episode at the first goal (puck past an end line)
+    goals = np.zeros(2)
+    out_a, out_b = puck[:, 1] < G.Y_A - 0.02, puck[:, 1] > G.Y_B + 0.02
+    gone = np.flatnonzero(out_a | out_b)
+    if len(gone):
+        goals[0 if out_a[gone[0]] else 1] = 1
+        puck, hands = puck[: gone[0]], hands[: gone[0]]
     return puck, hands, goals
 
 
@@ -78,6 +86,8 @@ def main():
             d = np.linalg.norm(hands[:, k] - puck, axis=1)
             touching = d < contact
             touches[k] += (touching[1:] & ~touching[:-1]).sum()
+            if len(puck) < 3:
+                continue
             acc["speed"][k].append(np.linalg.norm(np.diff(hands[:, k], axis=0), axis=1) / dt)
             m = own == k
             if m.sum() == 0:
@@ -100,7 +110,7 @@ def main():
     print(f"{args.ckpt} (iteration {it}), {args.episodes} games x {args.T * dt:.0f} s\n")
     print("player  puck-on-side  hand->puck  idle->puck  track r  speed  touches/min  goals vs/min")
     for k, frac, hp, ip, r, sp, tm, gm in rows:
-        gtxt = f"{gm:>12.1f}" if args.game == "oct" else f"{'n/a':>12}"   # 2-player game has no goal respawn
+        gtxt = f"{gm:>12.1f}"
         print(f"{k:>6}  {frac:>11.0%}  {hp:>10.3f}  {ip:>10.3f}  {r:>7.2f}  {sp:>5.2f}  {tm:>11.1f}  {gtxt}")
     print("\nhand->puck < idle->puck and track r > 0 means the player is moving to meet the puck;"
           "\nlow speed with track r ~ 0 means it is mostly idle.")
