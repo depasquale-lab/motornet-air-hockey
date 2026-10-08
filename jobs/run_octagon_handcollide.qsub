@@ -1,0 +1,20 @@
+#!/bin/bash -l
+#$ -P rnn-models
+#$ -N air_hockey_octagon_handcollide
+#$ -l h_rt=24:00:00
+#$ -pe omp 4
+#$ -j y
+#$ -o jobs/logs/$JOB_NAME.$JOB_ID.log
+
+set -e
+cd /projectnb/rnn-models/bddepasq/motornet-air-hockey-prototype
+source ../motornet-air-hockey/.venv/bin/activate
+export WANDB_DIR=/projectnb/rnn-models/bddepasq/motornet-air-hockey-prototype/wandb_dir
+export OMP_NUM_THREADS=$NSLOTS
+
+python motornet_octagon_hockey.py --iters 1000 --batch 128 --out_bias -2.5 \
+  --pretrain_iters 400 --tbptt 30 --game_lr 5e-4 --curriculum_iters 400 \
+  --chase_w0 10 --chase_floor 5 --effort 1e-3 --resume \
+  --hand_collide --hand_wall \
+  --wandb motornet-air-hockey --run_name octagon-pretrain-tbptt-handcollide --video_every 100 \
+  --ckpt octagon_hockey_handcollide.pt

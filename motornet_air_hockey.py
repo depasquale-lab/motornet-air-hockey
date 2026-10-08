@@ -107,12 +107,13 @@ def soft_pen(x):
     return F.softplus(BETA * x) / BETA
 
 
-def contact_force(p, v, pm, vm):
-    """Force on puck (p, v) from a mallet (pm, vm). Spring + damper along the normal."""
+def contact_force(p, v, pm, vm, r_sum=R_PUCK + R_MALLET):
+    """Force on body (p, v) from another body (pm, vm). Spring + damper along the normal.
+    Antisymmetric in (p, v) <-> (pm, vm): the force on the other body is the negative of this."""
     d = p - pm
     dist = torch.sqrt((d ** 2).sum(-1, keepdim=True) + 1e-8)
     n = d / dist
-    overlap = (R_PUCK + R_MALLET) - dist
+    overlap = r_sum - dist
     pen = soft_pen(overlap)
     gate = torch.sigmoid(BETA * overlap)
     v_rel_n = ((v - vm) * n).sum(-1, keepdim=True)
@@ -120,12 +121,12 @@ def contact_force(p, v, pm, vm):
     return F.relu(mag) * n  # contacts only push
 
 
-def wall_force(p):
+def wall_force(p, radius=R_PUCK):
     x, y = p[:, 0:1], p[:, 1:2]
-    fx = K_WALL * (soft_pen(-HALF_W + R_PUCK - x) - soft_pen(x - HALF_W + R_PUCK))
+    fx = K_WALL * (soft_pen(-HALF_W + radius - x) - soft_pen(x - HALF_W + radius))
     # end walls exist only outside the goal mouth
     outside_mouth = torch.sigmoid(BETA * (x.abs() - GOAL_HALF))
-    fy = K_WALL * outside_mouth * (soft_pen(Y_A + R_PUCK - y) - soft_pen(y - Y_B + R_PUCK))
+    fy = K_WALL * outside_mouth * (soft_pen(Y_A + radius - y) - soft_pen(y - Y_B + radius))
     return torch.cat([fx, fy], dim=-1)
 
 
@@ -245,7 +246,8 @@ def init_puck(batch, device, speed_scale=1.0):
     return torch.stack([x, y], -1), torch.stack([spd * torch.cos(ang), spd * torch.sin(ang)], -1)
 
 
-def rollout(A, B, batch, T=T_STEPS, noise=0.0, record=False, speed_scale=1.0, tbptt=0):
+def rollout(A, B, batch, T=T_STEPS, noise=0.0, record=False, speed_scale=1.0, tbptt=0,
+            hand_collide=False, hand_wall=False):
     device = A.device
     A.reset(batch)
     B.reset(batch)
@@ -262,9 +264,19 @@ def rollout(A, B, batch, T=T_STEPS, noise=0.0, record=False, speed_scale=1.0, tb
         pB, vB = B.hand_table()
         uA = A.act(A.observe(p, v, pB), noise)
         uB = B.act(B.observe(p, v, pA), noise)
+        # hands don't currently collide with each other or the table edge; both are optional
+        # (prototype) so the forces that caused training to destabilise (puck contacts, walls)
+        # stay isolated from this change until it's shown to be stable.
+        loadA = loadB = 0.0
+        if hand_collide:
+            f_hands = contact_force(pA, vA, pB, vB, r_sum=2 * R_MALLET)  # force on A from B
+            loadA, loadB = loadA + f_hands, loadB - f_hands
+        if hand_wall:
+            loadA = loadA + wall_force(pA, radius=R_MALLET)
+            loadB = loadB + wall_force(pB, radius=R_MALLET)
         # reaction force of the puck on each mallet (from the previous step's contacts)
-        A.step(uA, -fA)
-        B.step(uB, -fB)
+        A.step(uA, -fA + loadA)
+        B.step(uB, -fB + loadB)
         pA, vA = A.hand_table()
         pB, vB = B.hand_table()
         p, v, fA, fB = puck_step(p, v, pA, vA, pB, vB)
@@ -425,7 +437,7 @@ def train(args):
         speed_scale = min(1.0, it / args.curriculum_iters) if args.curriculum_iters else 1.0
         w_chase = max(args.chase_floor, args.chase_w0 * (1 - it / (0.6 * args.iters)))
         out = rollout(A, B, args.batch, T=args.episode, noise=args.noise, speed_scale=speed_scale,
-                      tbptt=args.tbptt)
+                      tbptt=args.tbptt, hand_collide=args.hand_collide, hand_wall=args.hand_wall)
         L_A, L_B, st = losses(out, w_chase=w_chase, w_effort=args.effort)
 
         gA = torch.autograd.grad(L_A, pA, retain_graph=True)
@@ -481,7 +493,7 @@ def play(args):
     A.policy.load_state_dict(ck["A"])
     B.policy.load_state_dict(ck["B"])
     with torch.no_grad():
-        out = rollout(A, B, 1, T=args.T, record=True)
+        out = rollout(A, B, 1, T=args.T, record=True, hand_collide=args.hand_collide, hand_wall=args.hand_wall)
     H = {k: np.array(v) for k, v in out["hist"].items()}
     L1, L2 = A.arm.skeleton.L1, A.arm.skeleton.L2
 
@@ -572,6 +584,8 @@ if __name__ == "__main__":
     ap.add_argument("--chase_floor", type=float, default=0.2, help="final weight on the chase shaping term")
     ap.add_argument("--effort", type=float, default=1e-2, help="weight on the muscle-effort penalty")
     ap.add_argument("--noise", type=float, default=0.01, help="motor noise on muscle commands")
+    ap.add_argument("--hand_collide", action="store_true", help="prototype: mallets push off each other")
+    ap.add_argument("--hand_wall", action="store_true", help="prototype: mallets are blocked by the table edge")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="cpu", help="CPU benchmarked faster than GPU here")
     ap.add_argument("--ckpt", default="air_hockey.pt")

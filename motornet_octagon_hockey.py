@@ -111,13 +111,13 @@ def soft_pen(x):
     return F.softplus(BETA * x) / BETA
 
 
-def contact_force(p, v, pm, vm):
-    """Force on the puck from every mallet. p, v: (B, 1, 2); pm, vm: (B, N, 2).
-    Returns (B, N, 2), the force each mallet exerts on the puck."""
+def contact_force(p, v, pm, vm, r_sum=R_PUCK + R_MALLET):
+    """Force on body p from body pm. p, v: (B, 1, 2); pm, vm: (B, N, 2).
+    Returns (B, N, 2), the force each pm exerts on p (antisymmetric: swap p<->pm for the reaction)."""
     d = p - pm
     dist = torch.sqrt((d ** 2).sum(-1, keepdim=True) + 1e-8)
     n = d / dist
-    overlap = (R_PUCK + R_MALLET) - dist
+    overlap = r_sum - dist
     pen = soft_pen(overlap)
     gate = torch.sigmoid(BETA * overlap)
     v_rel_n = ((v - vm) * n).sum(-1, keepdim=True)
@@ -125,16 +125,33 @@ def contact_force(p, v, pm, vm):
     return F.relu(mag) * n  # contacts only push
 
 
-def wall_force(p):
-    """Octagon walls with a goal gap in the middle of each side. p: (B, 2)."""
-    proj = p @ U.T.to(p.device)                      # (B, N) distance along each outward normal
-    tang = p @ TAN.T.to(p.device)                    # (B, N) position along each side
+def wall_force(p, radius=R_PUCK):
+    """Octagon walls with a goal gap in the middle of each side. p: (..., 2)."""
+    Ud, TANd = U.to(p.device), TAN.to(p.device)
+    proj = torch.einsum("...c,nc->...n", p, Ud)       # (..., N) distance along each outward normal
+    tang = torch.einsum("...c,nc->...n", p, TANd)     # (..., N) position along each side
     outside_mouth = torch.sigmoid(BETA * (tang.abs() - GOAL_HALF))
-    pen = soft_pen(proj - (APOTHEM - R_PUCK))        # how far the puck edge is into the wall
+    pen = soft_pen(proj - (APOTHEM - radius))         # how far the body's edge is into the wall
     # a puck that has crossed a goal line has scored: switch the walls off for it
     alive = torch.sigmoid(BETA_GOAL * (APOTHEM + 0.03 - proj.amax(-1, keepdim=True)))
-    mag = K_WALL * outside_mouth * pen * alive       # (B, N)
-    return -(mag.unsqueeze(-1) * U.to(p.device)).sum(1)
+    mag = K_WALL * outside_mouth * pen * alive        # (..., N)
+    return -(mag.unsqueeze(-1) * Ud).sum(-2)
+
+
+def hand_hand_force(pm, vm):
+    """Pairwise mallet-mallet contact forces. pm, vm: (B, N, 2).
+    Returns (B, N, 2): net force on each mallet from all the others."""
+    d = pm.unsqueeze(2) - pm.unsqueeze(1)              # (B, N, N, 2): d[:, i, j] = p_i - p_j
+    dist = torch.sqrt((d ** 2).sum(-1, keepdim=True) + 1e-8)
+    eye = torch.eye(pm.shape[1], device=pm.device, dtype=torch.bool).view(1, pm.shape[1], pm.shape[1], 1)
+    dist = dist.masked_fill(eye, 1e3)                  # no self-contact
+    n = d / dist
+    overlap = (2 * R_MALLET) - dist
+    pen = soft_pen(overlap)
+    gate = torch.sigmoid(BETA * overlap)
+    v_rel_n = ((vm.unsqueeze(2) - vm.unsqueeze(1)) * n).sum(-1, keepdim=True)
+    mag = K_CONTACT * pen - C_CONTACT * gate * v_rel_n
+    return (F.relu(mag) * n).sum(2)                    # (B, N, 2)
 
 
 def puck_step(p, v, pm, vm):
@@ -251,7 +268,8 @@ def init_puck(batch, device, speed_scale=1.0):
     return p, v
 
 
-def rollout(players, batch, T, noise=0.0, record=False, speed_scale=1.0, tbptt=0):
+def rollout(players, batch, T, noise=0.0, record=False, speed_scale=1.0, tbptt=0,
+            hand_collide=False, hand_wall=False):
     """record=True: batch must be 1; the puck respawns at the centre after each goal and
     per-frame state is stored for rendering."""
     device = players[0].device
@@ -268,11 +286,22 @@ def rollout(players, batch, T, noise=0.0, record=False, speed_scale=1.0, tbptt=0
             for pl in players:
                 pl.detach_state()
             p, v, f = p.detach(), v.detach(), f.detach()
-        hp = torch.stack([pl.hand_table()[0] for pl in players], 1)
+        hs0 = [pl.hand_table() for pl in players]
+        hp = torch.stack([h[0] for h in hs0], 1)
         us = [pl.act(pl.observe(p, v, hp), noise) for pl in players]
+        # hands don't currently collide with each other or the table edge; both are optional
+        # (prototype) so the forces that caused training to destabilise (puck contacts, walls)
+        # stay isolated from this change until it's shown to be stable.
+        loads = torch.zeros(batch, N, 2, device=device)
+        if hand_collide or hand_wall:
+            hv0 = torch.stack([h[1] for h in hs0], 1)
+            if hand_collide:
+                loads = loads + hand_hand_force(hp, hv0)
+            if hand_wall:
+                loads = loads + wall_force(hp, radius=R_MALLET)
         # reaction force of the puck on each mallet (from the previous step's contacts)
         for k, pl in enumerate(players):
-            pl.step(us[k], -f[:, k])
+            pl.step(us[k], -f[:, k] + loads[:, k])
         hs = [pl.hand_table() for pl in players]
         hp = torch.stack([h[0] for h in hs], 1)
         hv = torch.stack([h[1] for h in hs], 1)
@@ -426,7 +455,7 @@ def train(args):
         speed_scale = min(1.0, it / args.curriculum_iters) if args.curriculum_iters else 1.0
         w_chase = max(args.chase_floor, args.chase_w0 * (1 - it / (0.6 * args.iters)))
         out = rollout(players, args.batch, args.episode, noise=args.noise, speed_scale=speed_scale,
-                      tbptt=args.tbptt)
+                      tbptt=args.tbptt, hand_collide=args.hand_collide, hand_wall=args.hand_wall)
         L, st = losses(out, w_chase=w_chase, w_effort=args.effort)
 
         grads = [torch.autograd.grad(L[k], params[k], retain_graph=k < N - 1) for k in range(N)]
@@ -479,7 +508,7 @@ def play(args):
     for k, pl in enumerate(players):
         pl.policy.load_state_dict(ck["policies"][k])
     with torch.no_grad():
-        out = rollout(players, 1, args.T, record=True)
+        out = rollout(players, 1, args.T, record=True, hand_collide=args.hand_collide, hand_wall=args.hand_wall)
     H = {k: np.array(v) for k, v in out["hist"].items()}
     L1, L2 = players[0].arm.skeleton.L1, players[0].arm.skeleton.L2
     Un, EXn, EYn, SHn = U.numpy(), EX.numpy(), EY.numpy(), SHOULDER.numpy()
@@ -575,6 +604,8 @@ if __name__ == "__main__":
     ap.add_argument("--chase_floor", type=float, default=0.2, help="final weight on the chase shaping term")
     ap.add_argument("--effort", type=float, default=1e-2, help="weight on the muscle-effort penalty")
     ap.add_argument("--noise", type=float, default=0.01, help="motor noise on muscle commands")
+    ap.add_argument("--hand_collide", action="store_true", help="prototype: mallets push off each other")
+    ap.add_argument("--hand_wall", action="store_true", help="prototype: mallets are blocked by the table edge")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--threads", type=int, default=0, help="torch CPU threads (0 = default)")

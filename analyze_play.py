@@ -37,9 +37,10 @@ def load(game, ckpt, device="cpu"):
     return G, players, ck.get("it", "?")
 
 
-def episode(G, game, players, T):
+def episode(G, game, players, T, hand_collide=False, hand_wall=False):
     with torch.no_grad():
-        out = G.rollout(players, 1, T, record=True) if game == "oct" else G.rollout(players[0], players[1], 1, T=T, record=True)
+        out = (G.rollout(players, 1, T, record=True, hand_collide=hand_collide, hand_wall=hand_wall) if game == "oct"
+               else G.rollout(players[0], players[1], 1, T=T, record=True, hand_collide=hand_collide, hand_wall=hand_wall))
     H = out["hist"]
     puck = np.array(H["puck"])
     hands = np.array(H["hands"]) if game == "oct" else np.stack([np.array(H["A"]), np.array(H["B"])], 1)
@@ -62,6 +63,8 @@ def main():
     ap.add_argument("--episodes", type=int, default=20)
     ap.add_argument("--T", type=int, default=400)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--hand_collide", action="store_true", help="prototype: mallets push off each other")
+    ap.add_argument("--hand_wall", action="store_true", help="prototype: mallets are blocked by the table edge")
     args = ap.parse_args()
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -75,7 +78,7 @@ def main():
     touches, goals, frames = np.zeros(n), np.zeros(n), 0
 
     for ep in range(args.episodes):
-        puck, hands, g = episode(G, args.game, players, args.T)
+        puck, hands, g = episode(G, args.game, players, args.T, hand_collide=args.hand_collide, hand_wall=args.hand_wall)
         goals += g
         frames += len(puck)
         if args.game == "oct":

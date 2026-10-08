@@ -1,0 +1,23 @@
+#!/bin/bash -l
+#$ -P rnn-models
+#$ -N air_hockey_2p_eval
+#$ -l h_rt=00:30:00
+#$ -pe omp 2
+#$ -j y
+#$ -o jobs/logs/$JOB_NAME.$JOB_ID.log
+
+set -e
+source ../motornet-air-hockey/.venv/bin/activate
+export OMP_NUM_THREADS=$NSLOTS
+
+cd /projectnb/rnn-models/bddepasq/motornet-air-hockey
+echo "=== baseline: render ==="
+python motornet_air_hockey.py --play air_hockey.pt --out /projectnb/rnn-models/bddepasq/motornet-air-hockey-prototype/media/2p_baseline --gif_only
+echo "=== baseline: analyze ==="
+python analyze_play.py --game 2p --ckpt air_hockey.pt
+
+cd /projectnb/rnn-models/bddepasq/motornet-air-hockey-prototype
+echo "=== hand-collide: render ==="
+python motornet_air_hockey.py --play air_hockey_handcollide.pt --out media/2p_handcollide --gif_only --hand_collide --hand_wall
+echo "=== hand-collide: analyze ==="
+python analyze_play.py --game 2p --ckpt air_hockey_handcollide.pt --hand_collide --hand_wall
