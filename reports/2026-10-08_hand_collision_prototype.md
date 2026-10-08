@@ -86,3 +86,47 @@ than baseline, which doesn't look like a clean win in either direction.
 - If keeping either, retune contact stiffness/damping rather than reusing the puck's constants,
   and/or extend `--tbptt` truncation given the added stiff force terms.
 - Add the octagon comparison once that pair of runs finishes.
+
+
+## Ablation: isolating `--hand_collide` vs `--hand_wall` (2026-10-08 follow-up)
+
+Same 2p recipe, run with each flag alone to see which force drives the regression reported above.
+
+| condition | loss A | loss B | goals A | goals B | chase B |
+|---|---|---|---|---|---|
+| baseline | 0.383 | 0.68 | 0.211 | 0.18 | 0.119 |
+| --hand_collide only | 0.432 | 0.598 | 0.25 | 0.19 | 0.102 |
+| --hand_wall only | 0.94 | 0.73 | 0.27 | 0.26 | 0.151 |
+| both (combined) | 0.65 | 1.857 | 0.266 | 0.223 | 0.328 |
+
+Isolating the two forces: loss B is 0.598 with `--hand_collide` alone and 0.73 with `--hand_wall` alone, against 0.68 (baseline) and 1.857 (combined). **mallet-wall blocking** accounts for more of the regression.
+
+| `--hand_collide` only | `--hand_wall` only |
+|:---:|:---:|
+| ![2p hand-collide only](media/2p_handcollide_only.gif) | ![2p hand-wall only](media/2p_handwall_only.gif) |
+
+### Behaviour analysis, `--hand_collide` only
+
+```
+air_hockey_handcollide_only.pt (iteration 1000), 20 games x 4 s
+
+player  puck-on-side  hand->puck  idle->puck  track r  speed  touches/min  goals vs/min
+     0          72%       0.144       0.191     0.60   1.54         58.7          12.0
+     1          28%       0.149       0.210     0.54   1.81         29.4           5.3
+
+hand->puck < idle->puck and track r > 0 means the player is moving to meet the puck;
+low speed with track r ~ 0 means it is mostly idle.
+```
+
+### Behaviour analysis, `--hand_wall` only
+
+```
+air_hockey_handwall_only.pt (iteration 1000), 20 games x 4 s
+
+player  puck-on-side  hand->puck  idle->puck  track r  speed  touches/min  goals vs/min
+     0          62%       0.169       0.196     0.46   2.65         69.7           7.1
+     1          38%       0.167       0.205     0.49   2.94         63.8           8.3
+
+hand->puck < idle->puck and track r > 0 means the player is moving to meet the puck;
+low speed with track r ~ 0 means it is mostly idle.
+```
