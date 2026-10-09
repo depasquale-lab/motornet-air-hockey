@@ -130,3 +130,54 @@ player  puck-on-side  hand->puck  idle->puck  track r  speed  touches/min  goals
 hand->puck < idle->puck and track r > 0 means the player is moving to meet the puck;
 low speed with track r ~ 0 means it is mostly idle.
 ```
+
+
+## Octagon: baseline vs. hand-collide (2026-10-09 follow-up)
+
+`analyze_play.py` for the octagon pair referenced in the "Current state" note — baseline
+(`octagon-pretrain-tbptt-continued`) vs. combined `--hand_collide --hand_wall`
+(`octagon-pretrain-tbptt-handcollide`), both 1000 iterations. `goals/episode` alone looked worse
+for hand-collide (0.836 vs. 0.516); the per-player breakdown below is what that number is
+actually made of.
+
+| Baseline | Hand-collide |
+|:---:|:---:|
+| ![octagon baseline](media/octagon_baseline.gif) | ![octagon hand-collide](media/octagon_handcollide.gif) |
+
+### Octagon baseline
+
+```
+octagon_hockey.pt (iteration 1000), 20 games x 4 s
+
+player  puck-on-side  hand->puck  idle->puck  track r  speed  touches/min  goals vs/min
+     0          13%       0.203       0.139    -0.01   2.59         31.5           3.8
+     1          12%       0.176       0.158     0.14   2.62         17.2           3.8
+     2          10%       0.204       0.157     0.06   1.55         10.5           4.5
+     3           9%       0.205       0.153     0.27   3.26         30.8           8.2
+     4          11%       0.229       0.169     0.18   1.98         16.5           8.2
+     5          16%       0.181       0.165     0.28   2.84         28.5           6.0
+     6          14%       0.203       0.168     0.15   2.77         39.0           4.5
+     7          15%       0.254       0.156     0.07   2.48         20.2           5.2
+
+hand->puck < idle->puck and track r > 0 means the player is moving to meet the puck;
+low speed with track r ~ 0 means it is mostly idle.
+```
+
+### Octagon hand-collide (`--hand_collide --hand_wall`)
+
+```
+octagon_hockey_handcollide.pt (iteration 1000), 20 games x 4 s
+
+player  puck-on-side  hand->puck  idle->puck  track r  speed  touches/min  goals vs/min
+     0           8%       0.189       0.166     0.21   2.47         27.8           7.5
+     1          11%       0.194       0.177     0.30   2.49         26.2           6.0
+     2          12%       0.281       0.162     0.07   3.28         36.0           6.0
+     3          12%       0.241       0.153     0.15   3.31         24.8           6.8
+     4          16%       0.474       0.476    -0.02   2.95         36.0           9.0
+     5          16%       0.310       0.156     0.05   2.47         27.0           9.0
+     6          13%       0.207       0.144     0.12   2.82         11.2           7.5
+     7          12%       0.205       0.143    -0.02   3.37         26.2           6.8
+
+hand->puck < idle->puck and track r > 0 means the player is moving to meet the puck;
+low speed with track r ~ 0 means it is mostly idle.
+```
